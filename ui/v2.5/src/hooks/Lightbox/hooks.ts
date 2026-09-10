@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import * as GQL from "src/core/generated-graphql";
+import { useToast } from "../Toast";
 import { IState, useLightboxContext } from "./context";
 import { IChapter } from "./types";
 
@@ -17,6 +18,7 @@ export const useLightbox = (
       page: state.page,
       pages: state.pages,
       pageSize: state.pageSize,
+      totalCount: state.totalCount,
       slideshowEnabled: state.slideshowEnabled,
       onClose: state.onClose,
     });
@@ -28,6 +30,7 @@ export const useLightbox = (
     state.page,
     state.pages,
     state.pageSize,
+    state.totalCount,
     state.slideshowEnabled,
     state.onClose,
   ]);
@@ -40,10 +43,18 @@ export const useLightbox = (
         page: props.page ?? state.page,
         pages: props.pages ?? state.pages,
         pageSize: props.pageSize ?? state.pageSize,
+        totalCount: props.totalCount ?? state.totalCount,
         chapters: chapters,
       });
     },
-    [setLightboxState, state.page, state.pages, state.pageSize, chapters]
+    [
+      setLightboxState,
+      state.page,
+      state.pages,
+      state.pageSize,
+      state.totalCount,
+      chapters,
+    ]
   );
   return show;
 };
@@ -59,6 +70,7 @@ interface ILightboxGallery {
 
 export const useGalleriesLightbox = () => {
   const { setLightboxState } = useLightboxContext();
+  const Toast = useToast();
 
   const pageSize = 40;
   const [fetchImages, { data }] = GQL.useFindImagesLazyQuery();
@@ -83,7 +95,9 @@ export const useGalleriesLightbox = () => {
     if (!active.current) return;
     const images = data?.findImages?.images;
     if (!images) return;
-    setLightboxState({ images });
+    // totalCount drives the lightbox position counter; keep it in sync with the
+    // live query so it stays correct after edits that refetch (e.g. deletion).
+    setLightboxState({ images, totalCount: data?.findImages.count });
   }, [data, setLightboxState]);
 
   function loadPage(page: number) {
@@ -100,28 +114,36 @@ export const useGalleriesLightbox = () => {
           },
         },
       },
-    }).then((result) => {
-      // ignore if a different gallery was opened in the meantime
-      if (active.current !== current) return;
+    })
+      .then((result) => {
+        // ignore if a different gallery was opened in the meantime
+        if (active.current !== current) return;
 
-      const totalCount = result.data?.findImages.count ?? 0;
-      const pages = Math.ceil(totalCount / pageSize);
-      current.page = page;
-      current.pages = pages;
+        const totalCount = result.data?.findImages.count ?? 0;
+        const pages = Math.ceil(totalCount / pageSize);
+        current.page = page;
+        current.pages = pages;
 
-      setLightboxState({
-        isLoading: false,
-        isVisible: true,
-        images: result.data?.findImages?.images ?? [],
-        pageCallback: pages > 1 ? handleLightBoxPage : undefined,
-        page,
-        pages,
-        pageSize,
-        chapters: current.chapters,
-        slideshowEnabled: current.slideshowEnabled,
-        slideshowAutostart: current.slideshowAutostart,
+        setLightboxState({
+          isLoading: false,
+          isVisible: true,
+          images: result.data?.findImages?.images ?? [],
+          pageCallback: pages > 1 ? handleLightBoxPage : undefined,
+          page,
+          pages,
+          pageSize,
+          totalCount,
+          chapters: current.chapters,
+          slideshowEnabled: current.slideshowEnabled,
+          slideshowAutostart: current.slideshowAutostart,
+        });
+      })
+      .catch((e) => {
+        // A failed page load leaves the lightbox on its loader: the page and
+        // images props never change, so an in-flight switch cannot settle.
+        // Surface the error so the stall is at least explained.
+        Toast.error(e);
       });
-    });
   }
 
   function handleLightBoxPage(props: { direction?: number; page?: number }) {
